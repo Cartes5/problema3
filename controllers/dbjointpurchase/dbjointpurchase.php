@@ -154,6 +154,17 @@ class Dbjointpurchase extends Module
                         'name' => 'DBJOINT_EXCLUDE',
                         'class' => 'disabled',
                     ),
+                    array(
+                        'type' => 'checkbox',
+                        'label' => $this->l('Productos relacionados manuales'),
+                        'desc' => $this->l('Seleccione los productos relacionados de forma manual'),
+                        'name' => 'DBJOINT_MANUAL_RELATED',
+                        'values' => array(
+                            'query' => Product::getSimpleProducts($this->context->language->id),
+                            'id' => 'id_product',
+                            'name' => 'name',
+                        ),
+                    ),
                 ),
                 'submit' => array(
                     'title' => $this->l('Save'),
@@ -184,9 +195,14 @@ class Dbjointpurchase extends Module
     protected function postProcess()
     {
         $form_values = $this->getConfigFormValues();
-
+    
         foreach (array_keys($form_values) as $key) {
-            Configuration::updateValue($key, Tools::getValue($key));
+            if ($key === 'DBJOINT_MANUAL_RELATED') {
+                // Convertir el array de valores en una cadena CSV para guardar en la base de datos
+                Configuration::updateValue($key, implode(',', Tools::getValue($key)));
+            } else {
+                Configuration::updateValue($key, Tools::getValue($key));
+            }
         }
     }
 
@@ -230,34 +246,65 @@ class Dbjointpurchase extends Module
     }
 
     public function hookDisplayFooterProduct($params)
-    {
-        $product = $params['product'];
-        $id_product = $params['product']->id;
-        $key = 'dbjointpurchase|' . $id_product;
-        $total_price = $params['product']->price_amount;
-        $products_cat = $this->getProductsGenerate($id_product);
-        if ($products_cat != false && $product['add_to_cart_url']) {
-            if (!$this->isCached(
-                'module:dbjointpurchase/views/templates/hook/jointpurchase.tpl',
-                $this->getCacheId($key)
-            )) {
-                $productos = [];
-                foreach ($products_cat as $key => $products) {
-                    $productos[$key] = $this->prepareBlocksProducts($products);
-                    foreach ($productos[$key] as $pr) {
-                        $total_price += $pr['price_amount'];
-                    }
+{
+    $product = $params['product'];
+    $id_product = $product->id;
+    $key = 'dbjointpurchase|' . $id_product;
+    $total_price = $product->price_amount;
+    $products_cat = $this->getProductsGenerate($id_product);
+    
+    if ($products_cat != false && $product['add_to_cart_url']) {
+        if (!$this->isCached(
+            'module:dbjointpurchase/views/templates/hook/jointpurchase.tpl',
+            $this->getCacheId($key)
+        )) {
+            $productos = [];
+            foreach ($products_cat as $category_id => $products) {
+                $productos[$category_id] = $this->prepareBlocksProducts($products);
+                foreach ($productos[$category_id] as $pr) {
+                    $total_price += $pr['price_amount'];
                 }
-                $this->smarty->assign(array(
-                                          'productos' => $productos,
-                                          'total_price' => $total_price,
-                                          'premium' => $this->premium,
-                                      ));
             }
-
-            return $this->fetch('module:dbjointpurchase/views/templates/hook/jointpurchase.tpl');
+            
+            // Obtener productos relacionados seleccionados manualmente por el cliente
+            $selected_related_products = Tools::getValue('selected_related_products', array());
+            
+            // Convertir los valores en un formato que se pueda usar para buscar productos
+            $selected_related_products_ids = implode(',', array_map('intval', $selected_related_products));
+            
+            // Obtener los detalles de los productos seleccionados manualmente
+            $selected_products = array();
+            if (!empty($selected_related_products_ids)) {
+                $sql = "SELECT id_product, price FROM " . _DB_PREFIX_ . "product WHERE id_product IN ($selected_related_products_ids)";
+                $selected_products = Db::getInstance()->executeS($sql);
+            }
+            
+            // Asignar los productos seleccionados manualmente a la plantilla
+            $this->smarty->assign(array(
+                'productos' => $productos,
+                'total_price' => $total_price,
+                'premium' => $this->premium,
+                'selected_related_products' => $selected_products,  // Agregar esta línea
+            ));
         }
     }
+
+    if (Tools::isSubmit('selected_related_products')) {
+        $selected_related_products = Tools::getValue('selected_related_products');
+    
+        foreach ($selected_related_products as $product_id) {
+            $quantity = 1; // Puedes ajustar la cantidad si lo deseas
+            $this->context->cart->updateQty($quantity, $product_id);
+        }
+    
+        // Redireccionar al carrito o a la página de checkout
+        Tools::redirect('index.php?controller=cart');
+    }
+
+    return $this->fetch('module:dbjointpurchase/views/templates/hook/jointpurchase.tpl');
+}
+
+
 
     public function hookDisplayProductFullWidth($params)
     {
